@@ -2,6 +2,7 @@ package ellsa
 
 import (
 	"container/list"
+	"log"
 	"math"
 	"time"
 )
@@ -9,12 +10,37 @@ import (
 type ioCallbacks struct {
 	readCallback, writeCallback callback
 }
-type EventLoop struct {
+type eventLoop struct {
 	timeEvents      *list.List
-	ioEventNotifier notifier
+	ioEventNotifier Notifier
 	ioCallbacks     map[int]ioCallbacks
+	// setting stopLoop would terminate the eventLoop
+	stopLoop bool
 }
 
+type EventLoop interface {
+	Loop()
+	Stop()
+	SetNotifier(Notifier)
+	AddTimerEvent(scheduleAt time.Time, callback callback) bool
+	AddIOEvent(fd int, eventType IOEventType, callback callback) error
+}
+
+func NewEventLoop() EventLoop {
+	var loop = eventLoop{
+		timeEvents:  list.New(),
+		ioCallbacks: make(map[int]ioCallbacks),
+	}
+	return &loop
+}
+
+func (el *eventLoop) SetNotifier(notifier Notifier) {
+	el.ioEventNotifier = notifier
+}
+
+func (el *eventLoop) Stop() {
+	el.stopLoop = true
+}
 func executeTimerEvent(event *timerEvent) (timeoutElapased microsecs) {
 	now := time.Now().UnixMicro()
 	timeoutElapased = event.scheduleAt - now
@@ -24,9 +50,10 @@ func executeTimerEvent(event *timerEvent) (timeoutElapased microsecs) {
 	return
 }
 
-func (el *EventLoop) executeTimerEvents() (leastTimeout microsecs) {
+func (el *eventLoop) executeTimerEvents() (msLeastTimeout microsecs) {
 	ele := el.timeEvents.Front()
-	leastTimeout = math.MaxInt64
+	msLeastTimeout = math.MaxInt64
+	leastTimeoutChanged := false
 	for ele != nil {
 		event := ele.Value.(*timerEvent)
 		timeoutElapased := executeTimerEvent(event)
@@ -36,19 +63,25 @@ func (el *EventLoop) executeTimerEvents() (leastTimeout microsecs) {
 			ele = nextEle
 			continue
 		}
-		if timeoutElapased < leastTimeout {
-			leastTimeout = timeoutElapased
+		if timeoutElapased < msLeastTimeout {
+			msLeastTimeout = timeoutElapased
+			leastTimeoutChanged = true
 		}
+	}
+	if !leastTimeoutChanged {
+		return -1
 	}
 	return
 }
 
-func (el *EventLoop) executeIOevents(pollTimeout microsecs) error {
-	firedEvents, err := el.ioEventNotifier.poll(time.Duration(pollTimeout) * time.Microsecond)
+func (el *eventLoop) executeIOevents(pollTimeout microsecs) error {
+	firedEvents, err := el.ioEventNotifier.Poll(time.Duration(pollTimeout) * time.Microsecond)
 	if err != nil {
+		log.Print("error while polling")
 		return err
 	}
 	for i := range firedEvents {
+		// log.Print("fired event fd: ", firedEvents[i].fd)
 		var event = ioEvent{
 			fd:            firedEvents[i].fd,
 			eventType:     firedEvents[i].eventType,
@@ -61,14 +94,23 @@ func (el *EventLoop) executeIOevents(pollTimeout microsecs) error {
 }
 
 func executeIOEvent(event *ioEvent) {
-	if event.eventType&ioReadEvent == ioReadEvent { // we are prefering read callback before write callback
+	if event.eventType&IOReadEvent == IOReadEvent { // we are prefering read callback before write callback
+		// log.Print("invoking read callback for fd: ", event.fd)
 		event.readCallback()
 	}
-	if event.eventType&ioWriteEvent == ioWriteEvent {
+	if event.eventType&IOWriteEvent == IOWriteEvent {
+		// log.Print("invoking write callback for fd: ", event.fd)
 		event.writeCallback()
 	}
 }
 
-func (el *EventLoop) Loop() {
+func (el *eventLoop) Loop() {
+	for !el.stopLoop {
 
+		leastTimeout := el.executeTimerEvents()
+		err := el.executeIOevents(leastTimeout)
+		if err != nil {
+			log.Fatal("err occured while executing IO events: ", err)
+		}
+	}
 }
