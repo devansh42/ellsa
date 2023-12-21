@@ -15,7 +15,8 @@ type eventLoop struct {
 	ioEventNotifier Notifier
 	ioCallbacks     map[int]ioCallbacks
 	// setting stopLoop would terminate the eventLoop
-	stopLoop bool
+	stopLoop           bool
+	beforePollCallback func(EventLoop)
 }
 
 type EventLoop interface {
@@ -24,6 +25,8 @@ type EventLoop interface {
 	SetNotifier(Notifier)
 	AddTimerEvent(scheduleAt time.Time, callback callback) bool
 	AddIOEvent(fd int, eventType IOEventType, callback callback) error
+	RemoveIOEvent(fd int, eventType IOEventType) error
+	SetBeforePollCallback(cb func(EventLoop))
 }
 
 func NewEventLoop() EventLoop {
@@ -41,6 +44,11 @@ func (el *eventLoop) SetNotifier(notifier Notifier) {
 func (el *eventLoop) Stop() {
 	el.stopLoop = true
 }
+
+func (el *eventLoop) SetBeforePollCallback(cb func(EventLoop)) {
+	el.beforePollCallback = cb
+}
+
 func executeTimerEvent(event *timerEvent) (timeoutElapased microsecs) {
 	now := time.Now().UnixMicro()
 	timeoutElapased = event.scheduleAt - now
@@ -75,6 +83,10 @@ func (el *eventLoop) executeTimerEvents() (msLeastTimeout microsecs) {
 }
 
 func (el *eventLoop) executeIOevents(pollTimeout microsecs) error {
+	if el.beforePollCallback != nil {
+		el.beforePollCallback(el)
+	}
+
 	firedEvents, err := el.ioEventNotifier.Poll(time.Duration(pollTimeout) * time.Microsecond)
 	if err != nil {
 		log.Print("error while polling")
@@ -113,4 +125,8 @@ func (el *eventLoop) Loop() {
 			log.Fatal("err occured while executing IO events: ", err)
 		}
 	}
+}
+
+func (el *eventLoop) RemoveIOEvent(fd int, eventType IOEventType) error {
+	return el.ioEventNotifier.Remove(fd, eventType)
 }

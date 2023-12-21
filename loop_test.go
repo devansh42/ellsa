@@ -7,6 +7,11 @@ import (
 	"testing"
 )
 
+type conn struct {
+	fd        int
+	outputBuf *bytes.Buffer
+}
+
 func TestLoop(t *testing.T) {
 
 	notifier, err := NewKqueue(10)
@@ -19,10 +24,6 @@ func TestLoop(t *testing.T) {
 
 	setupServer(t, loop)
 	loop.Loop()
-}
-
-func makeNonBlocking(fd int) error {
-	return syscall.FcntlFlock(uintptr(fd), syscall.F_SETFL, &syscall.Flock_t{Type: syscall.O_NONBLOCK})
 }
 
 func setupServer(t *testing.T, loop EventLoop) {
@@ -69,14 +70,14 @@ func accpectorFn(t *testing.T, loop EventLoop, fd int) callback {
 			return
 		}
 		t.Log("accepted client fd: ", clientFd)
-		var buf bytes.Buffer
-		loop.AddIOEvent(clientFd, IOReadEvent, readerFn(t, &buf, clientFd))
-		loop.AddIOEvent(clientFd, IOWriteEvent, writerFn(t, &buf, clientFd))
+		var connInstance = conn{fd: clientFd, outputBuf: new(bytes.Buffer)}
+		loop.AddIOEvent(clientFd, IOReadEvent, readerFn(t, connInstance.outputBuf, clientFd))
+		// loop.AddIOEvent(clientFd, IOWriteEvent, writerFn(t, &buf, clientFd))
 	}
 }
 
 func writerFn(t *testing.T, rd io.Reader, fd int) callback {
-	var buf = make([]byte, 32)
+	var buf = make([]byte, 8)
 	return func() {
 		readBytes, err := io.ReadFull(rd, buf)
 		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
